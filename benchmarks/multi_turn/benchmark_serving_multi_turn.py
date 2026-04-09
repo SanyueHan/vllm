@@ -62,7 +62,6 @@ class RequestArgs(NamedTuple):
     chat_url: str
     model: str
     stream: bool
-    limit_min_tokens: int  # Use negative value for no limit
     limit_max_tokens: int  # Use negative value for no limit
     timeout_sec: int
 
@@ -214,7 +213,6 @@ async def send_request(
     chat_url: str,
     model: str,
     stream: bool = True,
-    min_tokens: int | None = None,
     max_tokens: int | None = None,
     timeout_sec: int = 120,
     conversation_id: str | None = None,
@@ -233,8 +231,9 @@ async def send_request(
         payload["stream"] = True
         payload["stream_options"] = {"include_usage": False}
 
-    if min_tokens is not None:
-        payload["min_tokens"] = min_tokens
+    # Note: min_tokens, min_p, logit_bias and other speculative decoding
+    # incompatible parameters are intentionally omitted to support
+    # deployments with speculative decoding enabled
 
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
@@ -392,23 +391,16 @@ async def send_turn(
             messages,
         )
 
-    # None means that there is no upper/lower limit for the output token count
-    min_tokens = None if req_args.limit_min_tokens < 0 else req_args.limit_min_tokens
+    # None means that there is no upper limit for the output token count
     max_tokens = None if req_args.limit_max_tokens < 0 else req_args.limit_max_tokens
 
     if len(conversation_messages) > messages_to_use:
         # The conversation contains an assistant answer for the next user prompt
-        if (
-            min_tokens == NUM_TOKENS_FROM_DATASET
-            or max_tokens == NUM_TOKENS_FROM_DATASET
-        ):
+        if max_tokens == NUM_TOKENS_FROM_DATASET:
             # Compute number of tokens in the answer (from the input conversation)
             assistant_answer = conversation_messages[messages_to_use]
             answer_num_tokens = get_token_count(tokenizer, assistant_answer["content"])
             assert assistant_answer["role"] == "assistant"
-
-        if min_tokens == NUM_TOKENS_FROM_DATASET:
-            min_tokens = max(1, answer_num_tokens)
 
         if max_tokens == NUM_TOKENS_FROM_DATASET:
             max_tokens = max(1, answer_num_tokens)
@@ -420,7 +412,6 @@ async def send_turn(
         req_args.chat_url,
         req_args.model,
         req_args.stream,
-        min_tokens,
         max_tokens,
         req_args.timeout_sec,
         conversation_id=conv_id,
@@ -856,19 +847,6 @@ def get_client_config(
         max_retries=args.max_retries,
     )
 
-    if args.limit_min_tokens > 0 or args.limit_max_tokens > 0:
-        if args.limit_min_tokens < 1 or args.limit_max_tokens < 1:
-            raise ValueError(
-                "Invalid min/max tokens limits (both limits should be provided)"
-            )
-        if args.limit_min_tokens > args.limit_max_tokens:
-            raise ValueError(
-                "Invalid min/max tokens limits (min should not be larger than max)"
-            )
-
-    if args.request_timeout_sec <= 0:
-        raise ValueError("Request timeout must be a positive number")
-
     # Arguments for API requests
     chat_url = f"{args.url}/v1/chat/completions"
     model_name = args.served_model_name if args.served_model_name else args.model
@@ -877,7 +855,6 @@ def get_client_config(
         chat_url=chat_url,
         model=model_name,
         stream=not args.no_stream,
-        limit_min_tokens=args.limit_min_tokens,
         limit_max_tokens=args.limit_max_tokens,
         timeout_sec=args.request_timeout_sec,
     )
@@ -1373,19 +1350,10 @@ async def main() -> None:
         "--limit-max-tokens",
         type=int,
         default=NUM_TOKENS_FROM_DATASET,
-        help="Set max_tokens for the output token count of each request "
-        "(must also set --limit-min-tokens). "
+        help="Set max_tokens for the output token count of each request. "
         "Overrides output token count from the input dataset. "
-        "Use a negative value to disable this limit.",
-    )
-    parser.add_argument(
-        "--limit-min-tokens",
-        type=int,
-        default=NUM_TOKENS_FROM_DATASET,
-        help="Set min_tokens for the output token count of each request "
-        "(must also set --limit-max-tokens). "
-        "Overrides output token count from the input dataset. "
-        "Use a negative value to disable this limit.",
+        "Use a negative value to disable this limit. "
+        "Note: min_tokens is not sent to support speculative decoding.",
     )
 
     parser.add_argument(
@@ -1652,9 +1620,6 @@ async def main() -> None:
         "active_conversations": args.max_active_conversations,
         "seed": args.seed,
     }
-
-    if args.limit_min_tokens > 0:
-        params["min_tokens"] = args.limit_min_tokens
 
     if args.limit_max_tokens > 0:
         params["max_tokens"] = args.limit_max_tokens
