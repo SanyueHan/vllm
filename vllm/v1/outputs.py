@@ -156,6 +156,9 @@ class KVConnectorOutput:
     # It captures a static setup info and should almost always remain constant
     # for a given connector after discovery. Default value entails no change.
     expected_finished_count: int = 0
+    # External cache load timing per request:
+    # request_id -> (load_duration_ms, num_loaded_tokens)
+    ext_cache_load_timing: dict[str, tuple[float, int]] = field(default_factory=dict)
 
     def is_empty(self):
         return (
@@ -165,6 +168,7 @@ class KVConnectorOutput:
             and not self.kv_cache_events
             and not self.invalid_block_ids
             and not self.kv_connector_worker_meta
+            and not self.ext_cache_load_timing
         )
 
     @classmethod
@@ -195,6 +199,10 @@ class KVConnectorOutput:
         )
         expected_finished_count = outputs[0].expected_finished_count
 
+        ext_cache_load_timing: dict[str, tuple[float, int]] = {}
+        for output in outputs:
+            ext_cache_load_timing.update(output.ext_cache_load_timing)
+
         return cls(
             finished_sending=finished_sending,
             finished_recving=finished_recving,
@@ -202,6 +210,7 @@ class KVConnectorOutput:
             kv_cache_events=kv_cache_events,
             invalid_block_ids=invalid_block_ids,
             expected_finished_count=expected_finished_count,
+            ext_cache_load_timing=ext_cache_load_timing,
         )
 
 

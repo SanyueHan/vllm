@@ -826,6 +826,8 @@ class Scheduler(SchedulerInterface):
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
+                if request.num_external_computed_tokens > 0 and request.prefill_start_time is None:
+                    request.prefill_start_time = time.monotonic()
                 # Count the number of prefix cached tokens.
                 if request.num_cached_tokens < 0:
                     request.num_cached_tokens = num_computed_tokens
@@ -988,10 +990,14 @@ class Scheduler(SchedulerInterface):
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
         for req_id, num_scheduled_token in num_scheduled_tokens.items():
             request = self.requests[req_id]
+            was_prefill = request.is_prefill_chunk
             request.num_computed_tokens += num_scheduled_token
             request.is_prefill_chunk = request.num_computed_tokens < (
                 request.num_tokens + request.num_output_placeholders
             )
+            if was_prefill and not request.is_prefill_chunk:
+                if request.prefill_start_time is not None and request.prefill_end_time is None:
+                    request.prefill_end_time = time.monotonic()
             scheduler_output.has_structured_output_requests |= (
                 request.use_structured_output and not request.is_prefill_chunk
             )
@@ -1336,6 +1342,13 @@ class Scheduler(SchedulerInterface):
                 kv_connector_output.invalid_block_ids,
                 num_scheduled_tokens,
             )
+
+        if kv_connector_output and kv_connector_output.ext_cache_load_timing:
+            for req_id, (load_duration_ms, num_loaded_tokens) in kv_connector_output.ext_cache_load_timing.items():
+                if req_id in self.requests:
+                    req = self.requests[req_id]
+                    req.ext_cache_load_duration_ms = load_duration_ms
+                    req.ext_cache_loaded_tokens = num_loaded_tokens
 
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
@@ -1819,6 +1832,27 @@ class Scheduler(SchedulerInterface):
         self, request: Request, delay_free_blocks: bool = False
     ) -> dict[str, Any] | None:
         assert request.is_finished()
+
+        if request.ext_cache_load_duration_ms is not None:
+            ext_load_ms = request.ext_cache_load_duration_ms
+            ext_tokens = request.ext_cache_loaded_tokens
+            prefill_ms = None
+            if request.prefill_start_time is not None and request.prefill_end_time is not None:
+                prefill_ms = (request.prefill_end_time - request.prefill_start_time) * 1000
+            num_prompt_tokens = request.num_prompt_tokens
+            num_uncached_tokens = num_prompt_tokens - ext_tokens
+            logger.info(
+                "Request %s ext_cache_timing: "
+                "ext_cache_loaded=%d tokens in %.2f ms, "
+                "prefill_uncached=%d tokens in %s ms, "
+                "total_prompt=%d tokens",
+                request.request_id,
+                ext_tokens,
+                ext_load_ms,
+                num_uncached_tokens,
+                f"{prefill_ms:.2f}" if prefill_ms is not None else "N/A",
+                num_prompt_tokens,
+            )
 
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)
