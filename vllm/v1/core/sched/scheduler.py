@@ -826,7 +826,7 @@ class Scheduler(SchedulerInterface):
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
-                if request.num_external_computed_tokens > 0 and request.prefill_start_time is None:
+                if request.prefill_start_time is None:
                     request.prefill_start_time = time.monotonic()
                 # Count the number of prefix cached tokens.
                 if request.num_cached_tokens < 0:
@@ -1833,26 +1833,27 @@ class Scheduler(SchedulerInterface):
     ) -> dict[str, Any] | None:
         assert request.is_finished()
 
-        if request.ext_cache_load_duration_ms is not None:
-            ext_load_ms = request.ext_cache_load_duration_ms
-            ext_tokens = request.ext_cache_loaded_tokens
-            prefill_ms = None
-            if request.prefill_start_time is not None and request.prefill_end_time is not None:
-                prefill_ms = (request.prefill_end_time - request.prefill_start_time) * 1000
-            num_prompt_tokens = request.num_prompt_tokens
-            num_uncached_tokens = num_prompt_tokens - ext_tokens
-            logger.info(
-                "Request %s ext_cache_timing: "
-                "ext_cache_loaded=%d tokens in %.2f ms, "
-                "prefill_uncached=%d tokens in %s ms, "
-                "total_prompt=%d tokens",
-                request.request_id,
-                ext_tokens,
-                ext_load_ms,
-                num_uncached_tokens,
-                f"{prefill_ms:.2f}" if prefill_ms is not None else "N/A",
-                num_prompt_tokens,
-            )
+        num_prompt_tokens = request.num_prompt_tokens
+        ext_tokens = request.ext_cache_loaded_tokens
+        num_uncached_tokens = num_prompt_tokens - ext_tokens
+        ext_load_ms = request.ext_cache_load_duration_ms
+        total_prefill_ms = None
+        if request.prefill_start_time is not None and request.prefill_end_time is not None:
+            total_prefill_ms = (request.prefill_end_time - request.prefill_start_time) * 1000
+        logger.info(
+            "Request %s prefill_timing: "
+            "total_prompt=%d tokens, "
+            "ext_cache_loaded=%d tokens in %s ms, "
+            "prefill_uncached=%d tokens in %s ms, "
+            "total_prefill=%s ms",
+            request.request_id,
+            num_prompt_tokens,
+            ext_tokens,
+            f"{ext_load_ms:.2f}" if ext_load_ms is not None else "N/A",
+            num_uncached_tokens,
+            f"{total_prefill_ms:.2f}" if total_prefill_ms is not None else "N/A",
+            f"{total_prefill_ms:.2f}" if total_prefill_ms is not None else "N/A",
+        )
 
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)

@@ -169,7 +169,8 @@ class Request:
         # ext_cache_loaded_tokens: number of tokens loaded from external cache.
         self.ext_cache_loaded_tokens: int = 0
         # prefill_start_time / prefill_end_time: monotonic timestamps for
-        # the prefill phase of non-cached tokens, measured in the scheduler.
+        # the entire prefill phase (from first RUNNING to prefill complete),
+        # measured in the scheduler.
         self.prefill_start_time: float | None = None
         self.prefill_end_time: float | None = None
 
