@@ -999,8 +999,7 @@ class Scheduler(SchedulerInterface):
                 request.num_tokens + request.num_output_placeholders
             )
             if was_prefill and not request.is_prefill_chunk:
-                if request.prefill_start_time is not None and request.prefill_end_time is None:
-                    request.prefill_end_time = time.monotonic()
+                request._prefill_just_completed = True
             scheduler_output.has_structured_output_requests |= (
                 request.use_structured_output and not request.is_prefill_chunk
             )
@@ -1373,6 +1372,11 @@ class Scheduler(SchedulerInterface):
                 # be set to None (in order to finish async KV transfer).
                 # In this case, we use is_finished() to check.
                 continue
+
+            if getattr(request, '_prefill_just_completed', False):
+                if request.prefill_start_time is not None and request.prefill_end_time is None:
+                    request.prefill_end_time = time.monotonic()
+                request._prefill_just_completed = False
 
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = (
