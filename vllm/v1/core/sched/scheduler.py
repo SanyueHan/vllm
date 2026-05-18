@@ -826,6 +826,11 @@ class Scheduler(SchedulerInterface):
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
+                request.is_prefill_chunk = num_computed_tokens < (
+                    request.num_tokens + request.num_output_placeholders
+                )
+                if request.prefill_start_time is None:
+                    request.prefill_start_time = time.monotonic()
                 # Count the number of prefix cached tokens.
                 if request.num_cached_tokens < 0:
                     request.num_cached_tokens = num_computed_tokens
@@ -988,10 +993,13 @@ class Scheduler(SchedulerInterface):
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
         for req_id, num_scheduled_token in num_scheduled_tokens.items():
             request = self.requests[req_id]
+            was_prefill = request.is_prefill_chunk
             request.num_computed_tokens += num_scheduled_token
             request.is_prefill_chunk = request.num_computed_tokens < (
                 request.num_tokens + request.num_output_placeholders
             )
+            if was_prefill and not request.is_prefill_chunk:
+                request._prefill_just_completed = True
             scheduler_output.has_structured_output_requests |= (
                 request.use_structured_output and not request.is_prefill_chunk
             )
@@ -1337,6 +1345,13 @@ class Scheduler(SchedulerInterface):
                 num_scheduled_tokens,
             )
 
+        if kv_connector_output and kv_connector_output.ext_cache_load_timing:
+            for req_id, (load_duration_ms, num_loaded_tokens) in kv_connector_output.ext_cache_load_timing.items():
+                if req_id in self.requests:
+                    req = self.requests[req_id]
+                    req.ext_cache_load_duration_ms = load_duration_ms
+                    req.ext_cache_loaded_tokens = num_loaded_tokens
+
         # NOTE(woosuk): As len(num_scheduled_tokens) can be up to 1K or more,
         # the below loop can be a performance bottleneck. We should do our best
         # to avoid expensive operations inside the loop.
@@ -1357,6 +1372,11 @@ class Scheduler(SchedulerInterface):
                 # be set to None (in order to finish async KV transfer).
                 # In this case, we use is_finished() to check.
                 continue
+
+            if getattr(request, '_prefill_just_completed', False):
+                if request.prefill_start_time is not None and request.prefill_end_time is None:
+                    request.prefill_end_time = time.monotonic()
+                request._prefill_just_completed = False
 
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = (
@@ -1819,6 +1839,33 @@ class Scheduler(SchedulerInterface):
         self, request: Request, delay_free_blocks: bool = False
     ) -> dict[str, Any] | None:
         assert request.is_finished()
+
+        num_prompt_tokens = request.num_prompt_tokens
+        ext_tokens = request.ext_cache_loaded_tokens
+        num_uncached_tokens = num_prompt_tokens - ext_tokens
+        ext_load_ms = request.ext_cache_load_duration_ms
+        total_prefill_ms = None
+        prefill_uncached_ms = None
+        if request.prefill_start_time is not None and request.prefill_end_time is not None:
+            total_prefill_ms = (request.prefill_end_time - request.prefill_start_time) * 1000
+            if ext_load_ms is not None:
+                prefill_uncached_ms = max(0.0, total_prefill_ms - ext_load_ms)
+            else:
+                prefill_uncached_ms = total_prefill_ms
+        logger.info(
+            "Request %s prefill_timing: "
+            "total_prompt=%d tokens, "
+            "ext_cache_loaded=%d tokens in %s ms, "
+            "prefill_uncached=%d tokens in %s ms, "
+            "total_prefill=%s ms",
+            request.request_id,
+            num_prompt_tokens,
+            ext_tokens,
+            f"{ext_load_ms:.2f}" if ext_load_ms is not None else "N/A",
+            num_uncached_tokens,
+            f"{prefill_uncached_ms:.2f}" if prefill_uncached_ms is not None else "N/A",
+            f"{total_prefill_ms:.2f}" if total_prefill_ms is not None else "N/A",
+        )
 
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)

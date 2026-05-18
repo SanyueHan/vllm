@@ -151,6 +151,7 @@ class Request:
 
         # True if this request is scheduled as a non-final prefill chunk.
         self.is_prefill_chunk = False
+        self._prefill_just_completed = False
 
         # The number of NaNs in logits. A value greater than 0
         # indicates that the output is corrupted
@@ -161,6 +162,18 @@ class Request:
 
         # The number of tokens that have been computed remotely.
         self.num_external_computed_tokens = 0
+
+        # Timing for external cache load and prefill phases.
+        # ext_cache_load_duration_ms: duration of external cache loading (ms),
+        # measured in the worker process.
+        self.ext_cache_load_duration_ms: float | None = None
+        # ext_cache_loaded_tokens: number of tokens loaded from external cache.
+        self.ext_cache_loaded_tokens: int = 0
+        # prefill_start_time / prefill_end_time: monotonic timestamps for
+        # the entire prefill phase (from first RUNNING to prefill complete),
+        # measured in the scheduler.
+        self.prefill_start_time: float | None = None
+        self.prefill_end_time: float | None = None
 
         self.block_hashes: list[BlockHash] = []
         # Store the block hasher without binding self to avoid creating a

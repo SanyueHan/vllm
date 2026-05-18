@@ -420,6 +420,15 @@ class KVConnectorBase_V1(ABC):
         """
         return None
 
+    def get_ext_cache_load_timing(self) -> dict[str, tuple[float, int]]:
+        """
+        Get the external cache load timing per request.
+
+        Returns:
+            dict mapping request_id to (load_duration_ms, num_loaded_tokens).
+        """
+        return {}
+
     def get_handshake_metadata(self) -> KVConnectorHandshakeMetadata | None:
         """
         Get the KVConnector handshake metadata for this connector.
