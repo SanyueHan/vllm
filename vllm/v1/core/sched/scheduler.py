@@ -826,6 +826,9 @@ class Scheduler(SchedulerInterface):
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
+                request.is_prefill_chunk = num_computed_tokens < (
+                    request.num_tokens + request.num_output_placeholders
+                )
                 if request.prefill_start_time is None:
                     request.prefill_start_time = time.monotonic()
                 # Count the number of prefix cached tokens.
@@ -1838,8 +1841,13 @@ class Scheduler(SchedulerInterface):
         num_uncached_tokens = num_prompt_tokens - ext_tokens
         ext_load_ms = request.ext_cache_load_duration_ms
         total_prefill_ms = None
+        prefill_uncached_ms = None
         if request.prefill_start_time is not None and request.prefill_end_time is not None:
             total_prefill_ms = (request.prefill_end_time - request.prefill_start_time) * 1000
+            if ext_load_ms is not None:
+                prefill_uncached_ms = max(0.0, total_prefill_ms - ext_load_ms)
+            else:
+                prefill_uncached_ms = total_prefill_ms
         logger.info(
             "Request %s prefill_timing: "
             "total_prompt=%d tokens, "
@@ -1851,7 +1859,7 @@ class Scheduler(SchedulerInterface):
             ext_tokens,
             f"{ext_load_ms:.2f}" if ext_load_ms is not None else "N/A",
             num_uncached_tokens,
-            f"{total_prefill_ms:.2f}" if total_prefill_ms is not None else "N/A",
+            f"{prefill_uncached_ms:.2f}" if prefill_uncached_ms is not None else "N/A",
             f"{total_prefill_ms:.2f}" if total_prefill_ms is not None else "N/A",
         )
 
